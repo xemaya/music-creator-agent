@@ -1,0 +1,57 @@
+apiVersion: a2h/v2
+kind: Agent
+
+metadata:
+  name: music_creator             # [a-z][a-z0-9_]{0,39}
+  version: 1.0.0                  # semver
+  displayName: AI 音乐创作助手    # human-readable name
+  description: 根据您的需求，用 AI 为您创作个性化音乐
+
+runtime:
+  type: sandbox                   # platform-hosted sandbox
+  port: 8080                      # container HTTP port
+  entrypoint:
+    - uvicorn
+    - server:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - "8080"
+  concurrency: 5                  # handle 5 concurrent chats per worker
+
+pool:
+  initial_workers: 3              # start with 3 workers
+  max_workers: 15                 # can scale up to 15
+  min_workers: 0                  # dormant → 0 workers → $0
+
+resources:
+  cpu: 1                          # vCPU
+  memory: 2048                    # MB (music generation needs more memory)
+
+# Platform tools
+tools:
+  - a2h.works.get
+  - a2h.order.create
+  - a2h.payment.checkout
+  - a2h.payment.status
+  - a2h.file.upload               # for uploading generated music
+  - a2h.chat.save_message         # persist conversation for cross-device
+  - a2h.chat.get_history
+
+# Environment variables
+env:
+  - name: A2H_TOKEN
+    required: true                # platform injects for a2h.* calls
+  - name: A2H_LLM_TOKEN
+    required: true                # Claude API proxy
+  - name: SUNO_API_KEY
+    required: true                # Suno API key for music generation
+  - name: SUNO_API_BASE
+    required: false               # Suno API base URL (optional, has default)
+
+# Outbound domain allowlist
+egress:
+  - api.anthropic.com             # Claude API
+  - api.a2hmarket.ai              # a2h.* tools
+  - api.suno.com                  # Suno music generation
+  - "*.suno.com"                  # Suno CDN for audio files
