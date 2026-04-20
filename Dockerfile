@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY server.py .
-COPY suno_client.py .
+COPY minimax_client.py .
 
 # The base image already has uvicorn, fastapi, and the a2h SDK
 # Expose the port (informational, actual port is in agent.yaml)

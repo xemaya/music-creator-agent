@@ -31,22 +31,22 @@ from a2h_agent import (
     text,
     ui,
 )
-from suno_client import SunoClient
+from minimax_client import MiniMaxClient
 
 log = logging.getLogger("music-creator-agent")
 
-# LLM configuration
+# LLM configuration (for chat)
 LLM = AsyncAnthropicBedrock()
 MODEL_ID = os.environ.get("A2H_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 MAX_TOKENS = int(os.environ.get("A2H_MAX_TOKENS", "2048"))
 MAX_TOOL_ROUNDS = int(os.environ.get("A2H_MAX_TOOL_ROUNDS", "6"))
 
-# Music generation settings
+# Music generation settings (MiniMax music-2.6)
 DEFAULT_DURATION = int(os.environ.get("DEFAULT_DURATION", "60"))
 SUPPORTED_STYLES = [
     "pop", "rock", "electronic", "classical", "jazz", "hip-hop",
     "r&b", "folk", "country", "ambient", "cinematic", "lo-fi",
-    "acoustic", "piano", "orchestral", "world",
+    "acoustic", "piano", "orchestral", "world", "chinese-traditional",
 ]
 
 # Agent identity
@@ -125,7 +125,7 @@ async def chat(request: Request) -> StreamingResponse:
     req = ChatRequest.from_json(body)
 
     memory_client = MemoryClient()
-    suno = SunoClient()
+    minimax = MiniMaxClient()
     system_text = build_system_prompt("音乐店铺", inject_memory_index(req.memory_index))
     messages: list[dict[str, Any]] = req.anthropic_messages()
 
@@ -147,6 +147,10 @@ async def chat(request: Request) -> StreamingResponse:
                 "duration": {
                     "type": "integer",
                     "description": "Duration in seconds (30-180)",
+                },
+                "lyrics": {
+                    "type": "string",
+                    "description": "Optional lyrics for vocal music (leave empty for instrumental)",
                 },
                 "instrumental": {
                     "type": "boolean",
@@ -197,7 +201,7 @@ async def chat(request: Request) -> StreamingResponse:
                             thinking_emitted = True
 
                         result = await handle_generate_music(
-                            dict(tu.input or {}), suno, req
+                            dict(tu.input or {}), minimax, req
                         )
                     elif tu.name.startswith("memory_"):
                         result = await dispatch_memory_tool(
@@ -229,24 +233,25 @@ async def chat(request: Request) -> StreamingResponse:
             )
 
         yield done()
-        await suno.close()
+        await minimax.close()
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 async def handle_generate_music(
     params: dict[str, Any],
-    suno: SunoClient,
+    minimax: MiniMaxClient,
     req: ChatRequest,
 ) -> dict[str, Any]:
     """Handle the generate_music tool call.
 
-    1. Generate music via Suno API
+    1. Generate music via MiniMax API
     2. Upload the music file to platform storage
     3. Return the file info for delivery
     """
     prompt = params.get("prompt", "")
     style = params.get("style", "")
+    lyrics = params.get("lyrics", "")
     duration = params.get("duration", DEFAULT_DURATION)
     instrumental = params.get("instrumental", False)
 
@@ -260,63 +265,108 @@ async def handle_generate_music(
 
     # Generate music (wait for completion)
     try:
-        result = await suno.generate_and_wait(
+        result = await minimax.generate_and_wait(
             prompt=prompt,
             style=style,
             duration=duration,
+            lyrics=lyrics,
             instrumental=instrumental,
-            poll_interval=5,
-            max_wait=300,
+            poll_interval=10,
+            max_wait=600,
         )
     except Exception as ex:
         log.exception("Music generation failed")
         return {"error": f"音乐生成失败: {str(ex)}"}
 
     audio_url = result.get("audio_url", "")
-    if not audio_url:
-        return {"error": "音乐生成完成，但未能获取音频文件"}
+    audio_hex = result.get("audio_hex", "")
 
-    # Upload to platform storage
-    try:
-        async with A2HClient() as a2h:
-            file_info = await upload_music_file(a2h, audio_url, prompt, style)
+    # If we got a URL, use it directly; if we got hex, upload to platform
+    if audio_url:
+        # Got a direct URL from MiniMax (24h expiry)
+        # Still upload to platform storage for persistence
+        try:
+            async with A2HClient() as a2h:
+                file_info = await upload_music_from_url(
+                    a2h, audio_url, prompt, style
+                )
+                return {
+                    "status": "success",
+                    "file_url": file_info.get("url", ""),
+                    "file_name": file_info.get("name", "music.mp3"),
+                    "title": f"{style} Music - {prompt[:30]}",
+                    "ready_for_delivery": True,
+                }
+        except Exception as ex:
+            log.exception("File upload failed")
             return {
-                "status": "success",
-                "file_url": file_info.get("url", ""),
-                "file_name": file_info.get("name", "music.mp3"),
-                "title": result.get("title", "AI Generated Music"),
-                "ready_for_delivery": True,
+                "status": "generated_but_upload_failed",
+                "error": f"音频文件上传失败: {str(ex)}",
+                "audio_url": audio_url,
             }
-    except Exception as ex:
-        log.exception("File upload failed")
-        return {
-            "status": "generated_but_upload_failed",
-            "error": f"音频文件上传失败: {str(ex)}",
-            "audio_url": audio_url,
-        }
+    elif audio_hex:
+        # Got hex-encoded audio from MiniMax, upload to platform
+        try:
+            async with A2HClient() as a2h:
+                file_info = await upload_music_from_hex(
+                    a2h, audio_hex, prompt, style
+                )
+                return {
+                    "status": "success",
+                    "file_url": file_info.get("url", ""),
+                    "file_name": file_info.get("name", "music.mp3"),
+                    "title": f"{style} Music - {prompt[:30]}",
+                    "ready_for_delivery": True,
+                }
+        except Exception as ex:
+            log.exception("File upload failed")
+            return {
+                "status": "generated_but_upload_failed",
+                "error": f"音频文件上传失败: {str(ex)}",
+            }
+    else:
+        return {"error": "音乐生成完成，但未能获取音频数据"}
 
 
-async def upload_music_file(
+async def upload_music_from_url(
     a2h: A2HClient,
     audio_url: str,
     prompt: str,
     style: str,
 ) -> dict[str, Any]:
-    """Download audio from Suno and upload to platform storage."""
-    # Download the audio file
+    """Download audio from MiniMax URL and upload to platform storage."""
     import httpx
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.get(audio_url)
         resp.raise_for_status()
         audio_bytes = resp.content
 
-    # Generate a filename
+    return await _upload_audio_bytes(a2h, audio_bytes, prompt, style)
+
+
+async def upload_music_from_hex(
+    a2h: A2HClient,
+    hex_str: str,
+    prompt: str,
+    style: str,
+) -> dict[str, Any]:
+    """Convert hex-encoded audio to bytes and upload to platform storage."""
+    audio_bytes = bytes.fromhex(hex_str)
+    return await _upload_audio_bytes(a2h, audio_bytes, prompt, style)
+
+
+async def _upload_audio_bytes(
+    a2h: A2HClient,
+    audio_bytes: bytes,
+    prompt: str,
+    style: str,
+) -> dict[str, Any]:
+    """Upload audio bytes to platform storage."""
     import hashlib
     file_hash = hashlib.md5(audio_bytes).hexdigest()[:8]
     style_slug = style.lower().replace(" ", "-") if style else "music"
     file_name = f"{style_slug}-{file_hash}.mp3"
 
-    # Upload to platform
     upload_result = await a2h.file_upload(
         file_name=file_name,
         file_content=audio_bytes,

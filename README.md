@@ -14,10 +14,11 @@
 ```
 music-creator-agent/
 ├── server.py           # FastAPI 主服务，实现 /chat 端点
-├── suno_client.py      # Suno API 客户端封装
+├── minimax_client.py   # MiniMax API 客户端封装 (music-2.6)
 ├── agent.yaml          # Agent 配置清单
 ├── Dockerfile          # 容器构建文件
 ├── requirements.txt    # Python 依赖
+├── deploy.sh           # 部署脚本
 └── README.md           # 说明文档
 ```
 

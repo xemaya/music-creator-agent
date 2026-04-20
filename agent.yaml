@@ -44,14 +44,16 @@ env:
     required: true                # platform injects for a2h.* calls
   - name: A2H_LLM_TOKEN
     required: true                # Claude API proxy
-  - name: SUNO_API_KEY
-    required: true                # Suno API key for music generation
-  - name: SUNO_API_BASE
-    required: false               # Suno API base URL (optional, has default)
+  - name: MINIMAX_API_KEY
+    required: true                # MiniMax API key for music generation (music-2.6)
+  - name: MINIMAX_API_BASE
+    required: false               # MiniMax API base URL (optional, has default)
+  - name: MINIMAX_MODEL_ID
+    required: false               # MiniMax model (default: music-2.6)
 
 # Outbound domain allowlist
 egress:
   - api.anthropic.com             # Claude API
   - api.a2hmarket.ai              # a2h.* tools
-  - api.suno.com                  # Suno music generation
-  - "*.suno.com"                  # Suno CDN for audio files
+  - api.minimax.chat              # MiniMax music generation
+  - "*.minimax.chat"              # MiniMax CDN for audio files
